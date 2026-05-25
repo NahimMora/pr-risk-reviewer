@@ -1,0 +1,5 @@
+requests
+openai
+pydantic
+pyyaml
+pytest

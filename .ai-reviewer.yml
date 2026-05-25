@@ -1,0 +1,29 @@
+review:
+  mode: summary
+  max_files: 25
+  max_diff_chars: 60000
+  min_severity: media
+
+ignore:
+  - "package-lock.json"
+  - "pnpm-lock.yaml"
+  - "yarn.lock"
+  - "dist/**"
+  - "build/**"
+  - "node_modules/**"
+  - "*.png"
+  - "*.jpg"
+  - "*.jpeg"
+  - "*.svg"
+  - "*.pdf"
+
+focus:
+  - bugs
+  - security
+  - regressions
+  - missing_tests
+  - edge_cases
+  - architecture
+
+bot:
+  marker: "<!-- ai-pr-reviewer -->"

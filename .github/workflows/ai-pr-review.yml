@@ -1,0 +1,59 @@
+name: AI PR Review
+
+# Security notes:
+# - This workflow does not use pull_request_target.
+# - Fork PRs are skipped because repository secrets are not available to forks.
+# - Checkout uses the base branch so the workflow runs trusted reviewer code,
+#   not code modified by the PR branch.
+# - The PR diff is read through the GitHub API by scripts/ai_pr_review.py.
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+
+jobs:
+  review:
+    if: >
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.head.repo.fork == false
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout base branch reviewer
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: python -m pytest
+
+      - name: Validate reviewer syntax
+        run: python -m py_compile scripts/ai_pr_review.py
+
+      - name: Run AI PR reviewer
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ vars.OPENAI_MODEL || 'gpt-4.1-mini' }}
+        run: python scripts/ai_pr_review.py
