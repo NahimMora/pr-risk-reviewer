@@ -113,8 +113,8 @@ def test_build_diff_omits_ignored_and_no_patch_files():
     assert "src/app.py" in diff_text
     assert "print('hello')" in diff_text
     assert "package-lock.json" not in diff_text
-    assert any("package-lock.json (ignored)" == item for item in skipped_files)
-    assert any("README.md (no patch)" == item for item in skipped_files)
+    assert "package-lock.json (ignored)" in skipped_files
+    assert "README.md (no patch)" in skipped_files
     assert was_truncated is False
 
 
@@ -156,24 +156,62 @@ def test_build_diff_truncates_by_max_diff_chars():
     assert was_truncated is True
 
 
+def test_reviewed_files_from_diff_extracts_unique_files():
+    diff_text = "\n".join(
+        [
+            "diff --git a/src/app.py b/src/app.py",
+            "@@",
+            "diff --git a/src/auth.py b/src/auth.py",
+            "@@",
+            "diff --git a/src/app.py b/src/app.py",
+        ]
+    )
+
+    assert reviewer.reviewed_files_from_diff(diff_text) == [
+        "src/app.py",
+        "src/auth.py",
+    ]
+
+
 def test_review_result_json_schema_is_strict():
     schema = reviewer.review_result_json_schema()
     required = {
         "risk",
         "summary",
         "main_changes",
+        "reviewed_files",
+        "skipped_files",
+        "diff_truncated",
+        "confidence",
         "findings",
         "manual_tests",
         "omitted_comments",
+    }
+    finding_required = {
+        "title",
+        "file",
+        "severity",
+        "category",
+        "confidence",
+        "evidence",
+        "impact",
+        "recommendation",
+        "suggested_test",
     }
 
     assert schema["additionalProperties"] is False
     assert set(schema["required"]) == required
     assert schema["properties"]["risk"]["enum"] == ["Bajo", "Medio", "Alto"]
+    assert schema["properties"]["confidence"]["enum"] == ["baja", "media", "alta"]
+    assert schema["properties"]["reviewed_files"]["type"] == "array"
+    assert schema["properties"]["skipped_files"]["type"] == "array"
+    assert schema["properties"]["diff_truncated"]["type"] == "boolean"
 
     finding = schema["properties"]["findings"]["items"]
     assert finding["additionalProperties"] is False
+    assert set(finding["required"]) == finding_required
     assert finding["properties"]["severity"]["enum"] == ["baja", "media", "alta"]
+    assert finding["properties"]["confidence"]["enum"] == ["baja", "media", "alta"]
     assert finding["properties"]["category"]["enum"] == [
         "bug",
         "security",
@@ -189,14 +227,21 @@ def valid_review_payload():
         "risk": "Medio",
         "summary": "Resumen de prueba.",
         "main_changes": ["Cambio principal."],
+        "reviewed_files": ["src/app.py"],
+        "skipped_files": ["dist/app.js (ignored)"],
+        "diff_truncated": False,
+        "confidence": "media",
         "findings": [
             {
                 "title": "Posible regresión",
                 "file": "src/app.py",
                 "severity": "alta",
                 "category": "bug",
+                "confidence": "media",
                 "evidence": "La evidencia aparece en el diff.",
+                "impact": "Puede romper el flujo de login.",
                 "recommendation": "Agregar una validación.",
+                "suggested_test": "Probar login con credenciales inválidas.",
             }
         ],
         "manual_tests": ["Probar el flujo principal."],
@@ -213,6 +258,11 @@ def test_render_markdown_with_finding():
     assert "## AI Review del PR" in markdown
     assert "### Veredicto" in markdown
     assert "### Resumen" in markdown
+    assert "### Cobertura del análisis" in markdown
+    assert "- Archivos revisados: src/app.py" in markdown
+    assert "- Archivos omitidos: dist/app.js (ignored)" in markdown
+    assert "- Diff truncado: No" in markdown
+    assert "- Confianza general: **media**" in markdown
     assert "### Cambios principales detectados" in markdown
     assert "### Hallazgos importantes" in markdown
     assert "### Casos que conviene probar manualmente" in markdown
@@ -221,6 +271,11 @@ def test_render_markdown_with_finding():
     assert "Archivo: `src/app.py`" in markdown
     assert "Severidad: **alta**" in markdown
     assert "Categoría: `bug`" in markdown
+    assert "Confianza: **media**" in markdown
+    assert "Evidencia: La evidencia aparece en el diff." in markdown
+    assert "Impacto: Puede romper el flujo de login." in markdown
+    assert "Recomendación: Agregar una validación." in markdown
+    assert "Test sugerido: Probar login con credenciales inválidas." in markdown
 
 
 def test_render_markdown_without_findings():
@@ -230,6 +285,7 @@ def test_render_markdown_without_findings():
 
     markdown = reviewer.render_markdown(review)
 
+    assert "### Cobertura del análisis" in markdown
     assert "### Hallazgos importantes" in markdown
     assert "- No se detectaron hallazgos importantes." in markdown
 
@@ -238,7 +294,10 @@ def test_review_result_valid_payload_passes():
     review = reviewer.ReviewResult.model_validate(valid_review_payload())
 
     assert review.risk == "Medio"
+    assert review.confidence == "media"
+    assert review.reviewed_files == ["src/app.py"]
     assert review.findings[0].severity == "alta"
+    assert review.findings[0].suggested_test
 
 
 def test_review_result_invalid_risk_fails():
@@ -260,6 +319,43 @@ def test_review_result_invalid_severity_fails():
 def test_review_result_invalid_category_fails():
     payload = valid_review_payload()
     payload["findings"][0]["category"] = "style"
+
+    with pytest.raises(pydantic.ValidationError):
+        reviewer.ReviewResult.model_validate(payload)
+
+
+def test_review_result_invalid_confidence_fails():
+    payload = valid_review_payload()
+    payload["confidence"] = "segura"
+
+    with pytest.raises(pydantic.ValidationError):
+        reviewer.ReviewResult.model_validate(payload)
+
+
+def test_finding_invalid_confidence_fails():
+    payload = valid_review_payload()
+    payload["findings"][0]["confidence"] = "segura"
+
+    with pytest.raises(pydantic.ValidationError):
+        reviewer.ReviewResult.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["reviewed_files", "skipped_files", "diff_truncated", "confidence"],
+)
+def test_review_result_new_fields_are_required(field):
+    payload = valid_review_payload()
+    payload.pop(field)
+
+    with pytest.raises(pydantic.ValidationError):
+        reviewer.ReviewResult.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["impact", "suggested_test", "confidence"])
+def test_finding_new_fields_are_required(field):
+    payload = valid_review_payload()
+    payload["findings"][0].pop(field)
 
     with pytest.raises(pydantic.ValidationError):
         reviewer.ReviewResult.model_validate(payload)
